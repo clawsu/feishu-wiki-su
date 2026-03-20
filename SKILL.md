@@ -197,6 +197,7 @@ python3 scripts/docx.py transfer-owner <document_id> --openid ou_xxx [--old-owne
 # app_token = obj_token from wiki.py get-node (obj_type must be "bitable")
 python3 scripts/bitable.py tables <app_token>
 python3 scripts/bitable.py create-table <app_token> --name "Name" [--fields-json '[{"field_name":"Name","type":1}]'] [--default-view "Grid"]
+python3 scripts/bitable.py bootstrap-table <app_token> --name "Tasks" --fields-json '[{"field_name":"Task","type":1},{"field_name":"Status","type":3}]' --replace-single-default --clean-empty
 python3 scripts/bitable.py delete-table <app_token> <table_id>
 python3 scripts/bitable.py fields <app_token> <table_id>
 python3 scripts/bitable.py create-field <app_token> <table_id> --name "Score" --type 2
@@ -204,12 +205,13 @@ python3 scripts/bitable.py create-field <app_token> <table_id> --name "Status" -
 python3 scripts/bitable.py update-field <app_token> <table_id> <field_id> --name "New Name" --type 2
 python3 scripts/bitable.py delete-field <app_token> <table_id> <field_id>
 python3 scripts/bitable.py get-record <app_token> <table_id> <record_id>
-python3 scripts/bitable.py query <app_token> <table_id> [--filter 'CurrentValue.[Name]="Alice"'] [--page-size 500] [--limit N]
+python3 scripts/bitable.py query <app_token> <table_id> [--filter 'CurrentValue.[Name]="Alice"'] [--page-size 500] [--limit N] [--skip-empty]
 python3 scripts/bitable.py add <app_token> <table_id> --records-json '[{"fields":{"Name":"Alice","Score":90}}]'
 python3 scripts/bitable.py update <app_token> <table_id> <record_id> --fields-json '{"Name":"Bob"}'
 python3 scripts/bitable.py batch-update <app_token> <table_id> --records-json '[{"record_id":"recXXX","fields":{"Name":"Bob"}}]'
 python3 scripts/bitable.py delete <app_token> <table_id> <record_id>
 python3 scripts/bitable.py batch-delete <app_token> <table_id> --record-ids-json '["recXXX","recYYY"]'
+python3 scripts/bitable.py clean-empty-records <app_token> <table_id>
 
 # ── sheet.py — spreadsheet read/write ────────────────────────────────────────
 # spreadsheet_token = obj_token from wiki.py get-node (obj_type must be "sheet")
@@ -368,6 +370,11 @@ python3 scripts/bitable.py create-table <app_token> --name "Sprint Tracker"
 python3 scripts/bitable.py create-table <app_token> --name "Sprint Tracker" \
   --fields-json '[{"field_name":"Name","type":1},{"field_name":"Score","type":2}]'
 
+# Prefer this for a newly created wiki bitable when you want a clean schema
+python3 scripts/bitable.py bootstrap-table <app_token> --name "Sprint Tracker" \
+  --fields-json '[{"field_name":"Name","type":1},{"field_name":"Status","type":3},{"field_name":"Score","type":2}]' \
+  --replace-single-default --clean-empty
+
 # Delete a table (IRREVERSIBLE)
 python3 scripts/bitable.py delete-table <app_token> <table_id>
 
@@ -391,6 +398,7 @@ python3 scripts/bitable.py get-record <app_token> <table_id> <record_id>
 # Query records — fetches ALL pages by default; use --limit to cap total
 python3 scripts/bitable.py query <app_token> <table_id>
 python3 scripts/bitable.py query <app_token> <table_id> --filter 'CurrentValue.[Status]="Done"' --limit 50
+python3 scripts/bitable.py query <app_token> <table_id> --skip-empty
 
 # Add records — auto-splits at 500/batch, 0.5s delay between batches
 python3 scripts/bitable.py add <app_token> <table_id> \
@@ -410,10 +418,15 @@ python3 scripts/bitable.py delete <app_token> <table_id> <record_id>
 # Batch delete records — auto-splits at 500/batch, 0.5s delay between batches
 python3 scripts/bitable.py batch-delete <app_token> <table_id> \
   --record-ids-json '["recXXX","recYYY","recZZZ"]'
+
+# Clean Feishu placeholder/example empty rows from a new table
+python3 scripts/bitable.py clean-empty-records <app_token> <table_id>
 ```
 
 All write commands enforce a 0.5s inter-batch delay automatically (avoids write conflict error 1254291).
 Read commands (`tables`, `fields`, `query`) auto-paginate with no extra flags needed.
+If a newly created Feishu bitable shows default empty rows, run `clean-empty-records` once or use `query --skip-empty`.
+If Feishu's default table/field layout is visually noisy, use `bootstrap-table` to create your own clean first table and replace the single default table.
 
 ---
 

@@ -72,6 +72,40 @@ Recommended install path for reuse across projects:
 python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su
 ```
 
+To install a specific release branch:
+
+```bash
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.1
+```
+
+### Update the installed skill
+
+If OpenClaw/Codex has already installed this skill, update it by re-running the installer from the same GitHub source or a newer release branch:
+
+```bash
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su
+```
+
+Or pin the update to a release branch:
+
+```bash
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.1
+```
+
+Recommended update flow:
+
+1. Publish a new branch or tag for the skill version.
+2. Re-run the installer against that branch or tag.
+3. Keep the same OpenClaw config keys:
+   - `skills.feishu-wiki-su.env.FEISHU_APP_ID`
+   - `skills.feishu-wiki-su.env.FEISHU_APP_SECRET`
+4. Re-run a quick verification:
+
+```bash
+python3 scripts/wiki.py check-connection
+python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>
+```
+
 After installation, set:
 
 ```bash
@@ -232,6 +266,9 @@ python3 scripts/docx.py transfer-owner <document_id> --openid ou_xxx [--old-owne
 python3 scripts/bitable.py tables <app_token>
 python3 scripts/bitable.py create-table <app_token> --name "Name" \
   [--fields-json '[{"field_name":"Name","type":1}]'] [--default-view "Grid"]
+python3 scripts/bitable.py bootstrap-table <app_token> --name "Tasks" \
+  --fields-json '[{"field_name":"Task","type":1},{"field_name":"Status","type":3},{"field_name":"Score","type":2}]' \
+  --replace-single-default --clean-empty
 python3 scripts/bitable.py delete-table <app_token> <table_id>
 
 # Fields  (type: 1=Text 2=Number 3=SingleSelect 4=MultiSelect 5=Date
@@ -246,7 +283,7 @@ python3 scripts/bitable.py delete-field <app_token> <table_id> <field_id>
 
 # Records
 python3 scripts/bitable.py get-record <app_token> <table_id> <record_id>
-python3 scripts/bitable.py query <app_token> <table_id> [--filter 'CurrentValue.[Status]="Done"'] [--limit N]
+python3 scripts/bitable.py query <app_token> <table_id> [--filter 'CurrentValue.[Status]="Done"'] [--limit N] [--skip-empty]
 python3 scripts/bitable.py add <app_token> <table_id> \
   --records-json '[{"fields":{"Name":"Alice","Score":90}}]'
 python3 scripts/bitable.py update <app_token> <table_id> <record_id> \
@@ -256,9 +293,20 @@ python3 scripts/bitable.py batch-update <app_token> <table_id> \
 python3 scripts/bitable.py delete <app_token> <table_id> <record_id>
 python3 scripts/bitable.py batch-delete <app_token> <table_id> \
   --record-ids-json '["recXXX","recYYY"]'
+python3 scripts/bitable.py clean-empty-records <app_token> <table_id>
 ```
 
 **Limits**: batch_create 500/call · batch_update 1000/call · batch_delete 500/call · max 20,000 records/table. All write commands enforce 0.5s inter-batch delay automatically.
+
+**New-table cleanup**: Feishu may create placeholder empty rows in the default table of a newly created bitable. If they interfere with display, run:
+
+```bash
+python3 scripts/bitable.py clean-empty-records <app_token> <table_id>
+```
+
+If you only want to hide them during reads, use `--skip-empty` on `query`.
+
+**Default-field cleanup**: if you want a clean first table with your own primary field name and field order, prefer `bootstrap-table` instead of editing Feishu's default table in place. It creates a clean table from your schema, can replace the single default table, and can remove empty placeholder rows in one flow.
 
 **Important**: bitables inside a wiki must be created via `wiki.py create-node --type bitable`. Using the standalone bitable creation endpoint returns error 1254002.
 

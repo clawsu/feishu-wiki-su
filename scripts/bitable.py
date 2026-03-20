@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 feishu-wiki-su — Bitable (multi-dimensional table) operations
-Commands: tables, create-table, delete-table, fields, query,
-          add, batch-update, delete, batch-delete
+Commands: tables, create-table, delete-table, bootstrap-table, fields, query,
+          add, batch-update, delete, batch-delete, clean-empty-records
 
 Usage: python3 scripts/bitable.py <command> [options]
 
@@ -32,6 +32,23 @@ _UPD_BATCH   = 1000  # max records per batch_update call
 _DEL_BATCH   = 500   # batch size for batch_delete
 
 
+def _is_empty_value(value):
+    if value is None:
+        return True
+    if value == "":
+        return True
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
+def _is_empty_record(record):
+    fields = record.get("fields", {})
+    if not fields:
+        return True
+    return all(_is_empty_value(v) for v in fields.values())
+
+
 # ── Pagination helper ─────────────────────────────────────────────────────────
 
 def _paginate(tok, path, result_key, extra_params=None):
@@ -52,12 +69,32 @@ def _paginate(tok, path, result_key, extra_params=None):
     return items
 
 
+def _list_tables(tok, app_token):
+    return _paginate(tok, f"/open-apis/bitable/v1/apps/{app_token}/tables", "items")
+
+
+def _batch_delete_record_ids(tok, app_token, table_id, record_ids):
+    all_deleted = []
+    for start in range(0, len(record_ids), _DEL_BATCH):
+        batch = record_ids[start:start + _DEL_BATCH]
+        resp = _api("POST",
+                    f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}"
+                    "/records/batch_delete",
+                    token=tok, body={"records": batch})
+        if resp.get("code") != 0:
+            _die(f"batch-delete failed at batch {start // _DEL_BATCH + 1}: {resp}")
+        all_deleted.extend(resp.get("data", {}).get("records", []))
+        if start + _DEL_BATCH < len(record_ids):
+            time.sleep(_WRITE_DELAY)
+    return all_deleted
+
+
 # ── Table operations ──────────────────────────────────────────────────────────
 
 def do_tables(a):
     """List all tables (all pages)."""
     tok = _get_token()
-    items = _paginate(tok, f"/open-apis/bitable/v1/apps/{a.app_token}/tables", "items")
+    items = _list_tables(tok, a.app_token)
     _out({"total": len(items), "items": items})
 
 
@@ -96,6 +133,71 @@ def do_delete_table(a):
     if resp.get("code") != 0:
         _die(f"delete-table failed: {resp}")
     _out({"ok": True, "deleted_table_id": a.table_id})
+
+
+def do_bootstrap_table(a):
+    """
+    Create a clean table with a caller-controlled primary field and optional schema.
+    Optionally replace Feishu's single default table to avoid placeholder fields and
+    empty example rows.
+    """
+    tok = _get_token()
+    before = _list_tables(tok, a.app_token)
+
+    if a.fields_json:
+        fields = json.loads(a.fields_json)
+        if not isinstance(fields, list) or not fields:
+            _die("--fields-json must be a non-empty JSON array")
+    else:
+        fields = [{"field_name": a.primary_name, "type": 1}]
+
+    table = {"name": a.name, "fields": fields}
+    if a.default_view:
+        table["default_view_name"] = a.default_view
+    resp = _api("POST", f"/open-apis/bitable/v1/apps/{a.app_token}/tables",
+                token=tok, body={"table": table})
+    if resp.get("code") != 0:
+        _die(f"bootstrap-table create failed: {resp}")
+
+    data = resp.get("data", {})
+    created_table_id = data.get("table_id")
+    dropped_default_table_id = ""
+    replace_note = ""
+
+    if a.replace_single_default:
+        if len(before) == 1 and before[0].get("name") in ("Table", "数据表"):
+            default_id = before[0].get("table_id")
+            del_resp = _api("DELETE",
+                            f"/open-apis/bitable/v1/apps/{a.app_token}/tables/{default_id}",
+                            token=tok)
+            if del_resp.get("code") == 0:
+                dropped_default_table_id = default_id
+            else:
+                replace_note = f"created clean table but failed to delete default table: {del_resp}"
+        elif len(before) == 1:
+            replace_note = f"existing single table '{before[0].get('name')}' not treated as default"
+        else:
+            replace_note = "replace-single-default skipped because app had multiple tables before create"
+
+    cleaned = {"records_deleted": 0, "deleted_ids": []}
+    if a.clean_empty:
+        items = _paginate(tok,
+                          f"/open-apis/bitable/v1/apps/{a.app_token}/tables/{created_table_id}/records",
+                          "items")
+        empty_ids = [item.get("record_id") for item in items if _is_empty_record(item) and item.get("record_id")]
+        if empty_ids:
+            deleted = _batch_delete_record_ids(tok, a.app_token, created_table_id, empty_ids)
+            cleaned = {"records_deleted": len(deleted), "deleted_ids": deleted}
+
+    _out({
+        "ok": True,
+        "table_id": created_table_id,
+        "default_view_id": data.get("default_view_id"),
+        "field_id_list": data.get("field_id_list", []),
+        "dropped_default_table_id": dropped_default_table_id,
+        "replace_note": replace_note,
+        "clean_empty": cleaned,
+    })
 
 
 # ── Field operations ──────────────────────────────────────────────────────────
@@ -195,6 +297,8 @@ def do_query(a):
             _die(f"query failed: {resp}")
         data = resp.get("data", {})
         batch = data.get("items", [])
+        if a.skip_empty:
+            batch = [item for item in batch if not _is_empty_record(item)]
         items.extend(batch)
 
         # honour --limit
@@ -300,19 +404,26 @@ def do_batch_delete(a):
     if not isinstance(record_ids, list):
         _die("--record-ids-json must be a JSON array: [\"recXXX\", \"recYYY\"]")
 
-    all_deleted = []
-    for start in range(0, len(record_ids), _DEL_BATCH):
-        batch = record_ids[start:start + _DEL_BATCH]
-        resp = _api("POST",
-                    f"/open-apis/bitable/v1/apps/{a.app_token}/tables/{a.table_id}"
-                    "/records/batch_delete",
-                    token=tok, body={"records": batch})
-        if resp.get("code") != 0:
-            _die(f"batch-delete failed at batch {start // _DEL_BATCH + 1}: {resp}")
-        all_deleted.extend(resp.get("data", {}).get("records", []))
-        if start + _DEL_BATCH < len(record_ids):
-            time.sleep(_WRITE_DELAY)
+    all_deleted = _batch_delete_record_ids(tok, a.app_token, a.table_id, record_ids)
+    _out({"ok": True, "records_deleted": len(all_deleted), "deleted_ids": all_deleted})
 
+
+def do_clean_empty_records(a):
+    """
+    Delete records whose fields are fully empty.
+    Useful right after creating a new Feishu bitable when the default table
+    contains placeholder/example rows with no actual values.
+    """
+    tok = _get_token()
+    items = _paginate(tok,
+                      f"/open-apis/bitable/v1/apps/{a.app_token}/tables/{a.table_id}/records",
+                      "items")
+    empty_ids = [item.get("record_id") for item in items if _is_empty_record(item) and item.get("record_id")]
+    if not empty_ids:
+        _out({"ok": True, "records_deleted": 0, "deleted_ids": [], "message": "no empty records found"})
+        return
+
+    all_deleted = _batch_delete_record_ids(tok, a.app_token, a.table_id, empty_ids)
     _out({"ok": True, "records_deleted": len(all_deleted), "deleted_ids": all_deleted})
 
 
@@ -339,6 +450,19 @@ def main():
     c.add_argument("--fields-json", dest="fields_json", default=None,
                    help='[{"field_name":"Name","type":1},{"field_name":"Status","type":3,'
                         '"property":{"options":[{"name":"Done","color":0}]}}]')
+
+    c = sp.add_parser("bootstrap-table", help="Create a clean table and optionally replace Feishu's default table")
+    c.add_argument("app_token")
+    c.add_argument("--name", required=True, help="Table name")
+    c.add_argument("--primary-name", dest="primary_name", default="Name",
+                   help="Primary field name when --fields-json is omitted (default: Name)")
+    c.add_argument("--fields-json", dest="fields_json", default=None,
+                   help='Full clean schema. First field becomes the primary field.')
+    c.add_argument("--default-view", dest="default_view", default=None)
+    c.add_argument("--replace-single-default", action="store_true",
+                   help="If the app only has one default table named Table/数据表, delete it after creating the clean table")
+    c.add_argument("--clean-empty", action="store_true",
+                   help="Clean fully empty records in the new table after creation")
 
     # delete-table
     c = sp.add_parser("delete-table", help="Delete a table (IRREVERSIBLE)")
@@ -396,6 +520,8 @@ def main():
                    help="Records per API call (max 500, default 500)")
     c.add_argument("--limit", type=int, default=0,
                    help="Stop after N total records (0 = fetch all)")
+    c.add_argument("--skip-empty", action="store_true",
+                   help="Filter out records whose fields are fully empty")
 
     # add
     c = sp.add_parser("add", help="Batch create records (auto-splits at 500, 0.5s delay)")
@@ -432,11 +558,16 @@ def main():
     c.add_argument("--record-ids-json", required=True, dest="record_ids_json",
                    help='["recXXX","recYYY"]')
 
+    c = sp.add_parser("clean-empty-records", help="Delete all fully empty records in a table")
+    c.add_argument("app_token")
+    c.add_argument("table_id")
+
     a = p.parse_args()
     {
         "tables":        do_tables,
         "create-table":  do_create_table,
         "delete-table":  do_delete_table,
+        "bootstrap-table": do_bootstrap_table,
         "fields":        do_fields,
         "create-field":  do_create_field,
         "update-field":  do_update_field,
@@ -448,6 +579,7 @@ def main():
         "batch-update":  do_batch_update,
         "delete":        do_delete,
         "batch-delete":  do_batch_delete,
+        "clean-empty-records": do_clean_empty_records,
     }[a.cmd](a)
 
 
