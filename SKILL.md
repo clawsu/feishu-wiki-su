@@ -1,12 +1,12 @@
 ---
 name: feishu-wiki-su
-description: Full Feishu knowledge base management via direct Feishu Open Platform API calls. Covers wiki spaces, nodes, members, bitable (multi-dimensional tables), spreadsheet (sheet) read/write, docx creation with chunked writing, and recursive folder summarization. Trigger on: mentions of Feishu wiki/knowledge base/wiki space/wiki nodes, feishu.cn/wiki/ URLs, requests to create docs/bitables/sheets inside a wiki, manage wiki members or permissions, scan a wiki and generate a summary report, read or write spreadsheet cells inside a wiki, or perform CRUD on bitable records inside a wiki.
-author: clawsu
-homepage: https://github.com/clawsu/feishu-wiki-su
+description: "Full Feishu knowledge base management via direct Feishu Open Platform API calls. Covers wiki spaces, nodes, members, bitable (multi-dimensional tables), spreadsheet (sheet) read/write, docx creation with chunked writing, and recursive folder summarization. Trigger on mentions of Feishu wiki, knowledge base, wiki space, wiki nodes, feishu.cn/wiki URLs, requests to create docs, bitables, or sheets inside a wiki, manage wiki members or permissions, scan a wiki and generate a summary report, read or write spreadsheet cells inside a wiki, or perform CRUD on bitable records inside a wiki."
 metadata: {"openclaw":{"requires":{"env":["FEISHU_APP_ID","FEISHU_APP_SECRET"]},"primaryEnv":"FEISHU_APP_ID"}}
 ---
 
 # Feishu Wiki Su
+
+Repository: `https://github.com/clawsu/feishu-wiki-su`
 
 Calls Feishu Open Platform APIs directly. Does not rely on any OpenClaw built-in Feishu tools.
 API quick reference: `references/api.md` — Report format: `references/report-format.md` — Templates & syntax: `references/templates.md`

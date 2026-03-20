@@ -59,6 +59,38 @@ Current boundary:
 
 ---
 
+## Install as Skill
+
+You can use this repository in two ways:
+
+- As a normal project repository: read `SKILL.md` from the repo root and run the bundled scripts directly
+- As an installable Codex/OpenClaw skill: install from GitHub and then configure Feishu credentials
+
+Recommended install path for reuse across projects:
+
+```bash
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su
+```
+
+After installation, set:
+
+```bash
+openclaw config set skills.feishu-wiki-su.env.FEISHU_APP_ID <App ID>
+openclaw config set skills.feishu-wiki-su.env.FEISHU_APP_SECRET <App Secret>
+```
+
+Optional project-local test path:
+
+```text
+project-skills/
+  feishu-wiki-su/
+    SKILL.md
+    scripts/
+    references/
+```
+
+---
+
 ## Setup
 
 ### 1. Create or reuse a Feishu app
