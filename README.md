@@ -69,27 +69,43 @@ You can use this repository in two ways:
 Recommended install path for reuse across projects:
 
 ```bash
-python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py --url https://github.com/clawsu/feishu-wiki-su --path .
 ```
 
 To install a specific release branch:
 
 ```bash
-python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.1
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py --url https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.1 --path .
 ```
 
 ### Update the installed skill
 
-If OpenClaw/Codex has already installed this skill, update it by re-running the installer from the same GitHub source or a newer release branch:
+If OpenClaw/Codex has already installed this skill, update it by re-running the installer from the same GitHub source or a newer release branch.
+
+Recommended wrapper command:
 
 ```bash
-python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su
+bash scripts/update_skill.sh
+```
+
+Update to a pinned release branch:
+
+```bash
+bash scripts/update_skill.sh feishu-wiki-su-v1.1.2
+```
+
+The wrapper also accepts a full GitHub branch URL.
+
+Equivalent raw installer command:
+
+```bash
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py --url https://github.com/clawsu/feishu-wiki-su --path .
 ```
 
 Or pin the update to a release branch:
 
 ```bash
-python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.1
+python3 /Users/su/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py --url https://github.com/clawsu/feishu-wiki-su/tree/feishu-wiki-su-v1.1.2 --path .
 ```
 
 Recommended update flow:
