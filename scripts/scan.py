@@ -11,7 +11,7 @@ import os
 import argparse
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib import _api, _get_token, _die, ICONS
+from lib import _api, _get_token, _die, ICONS, _get_default_target
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -85,13 +85,19 @@ def main():
         prog="scan",
         description="Recursively scan a wiki space and output a Markdown summary report",
     )
-    p.add_argument("url", help="Feishu wiki URL or bare node_token")
+    p.add_argument("url", nargs="?", help="Feishu wiki URL or bare node_token; defaults to configured root node")
+    p.add_argument("--target", default=None, help="Named target from targets_json")
     a = p.parse_args()
 
     tok = _get_token()
 
     # extract node_token from URL or use as-is
-    raw = a.url.rstrip("/").split("/")[-1].split("?")[0]
+    if a.url:
+        raw = a.url.rstrip("/").split("/")[-1].split("?")[0]
+    else:
+        raw = _get_default_target(a.target).get("root_node_token", "")
+        if not raw:
+            _die("No node token provided and no default_root_node_token configured")
 
     root_resp = _api("GET", "/open-apis/wiki/v2/spaces/get_node",
                      token=tok, params={"token": raw})

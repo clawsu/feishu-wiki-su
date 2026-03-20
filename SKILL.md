@@ -55,6 +55,19 @@ openclaw config set skills.feishu-wiki-su.env.FEISHU_APP_SECRET  <App Secret>
 > while this skill reads them from env vars. They must be set separately even if the
 > values are identical.
 
+Optional defaults for a reusable business workflow:
+```
+openclaw config set skills.feishu-wiki-su.config.default_space_id <space_id>
+openclaw config set skills.feishu-wiki-su.config.default_root_node_token <node_token>
+openclaw config set skills.feishu-wiki-su.config.owner_openid <ou_xxx>
+openclaw config set skills.feishu-wiki-su.config.targets_json '{"product":{"space_id":"<space_id>","root_node_token":"<node_token>"}}'
+```
+
+Resolution order:
+1. Process env vars
+2. `skills.feishu-wiki-su.env` / `skills.feishu-wiki-su.config`
+3. `channels.feishu.appId` / `channels.feishu.appSecret` as credential fallback
+
 ### Step B — Enable required permissions
 
 In the app console → **Permission Management** → **Enable Permissions**, search and enable:
@@ -103,6 +116,7 @@ Only needed if you want docx nodes auto-transferred to your personal account aft
 ### Setup checklist
 
 - [ ] `FEISHU_APP_ID` and `FEISHU_APP_SECRET` set in OpenClaw config
+- [ ] `default_space_id` and/or `default_root_node_token` set for the main wiki target
 - [ ] 4 required permissions enabled
 - [ ] App version published and approved by admin
 - [ ] App added as member to all target wiki spaces
@@ -149,14 +163,20 @@ Success criterion: after every operation, explicitly report the result and all k
 ```bash
 # ── wiki.py — spaces, nodes, members ────────────────────────────────────────
 python3 scripts/wiki.py token                                           # verify credentials
+python3 scripts/wiki.py check-connection                                # verify credentials + default target
+python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>      # probe wiki/content access and cache first success
 python3 scripts/wiki.py spaces                                          # list all wiki spaces
+python3 scripts/wiki.py resolve-target [--target product]               # resolve default target / alias
 python3 scripts/wiki.py get-space <space_id>                            # get space details
 python3 scripts/wiki.py nodes <space_id> [--parent <node_token>]       # list nodes
 python3 scripts/wiki.py get-node <node_token>                           # resolve → obj_token
-python3 scripts/wiki.py create-node <space_id> --title "T" [--type docx|bitable|sheet] [--parent <token>]
+python3 scripts/wiki.py create-node [<space_id>] --title "T" [--type docx|bitable|sheet] [--parent <token>] [--target product]
+python3 scripts/wiki.py create-doc [<space_id>] --title "T" --content "..." [--parent <token>] [--target product]
 python3 scripts/wiki.py move-node <space_id> <node_token> --target-parent <token>
 python3 scripts/wiki.py rename-node <space_id> <node_token> --title "New Title"
 python3 scripts/wiki.py add-member <space_id> --email user@example.com [--role member|admin]
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <open_id> [--role member|admin]
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <open_id> --role admin --access-token <user_access_token>
 python3 scripts/wiki.py remove-member <space_id> --member-id <id> [--member-role member|admin]
 
 # ── docx.py — document content ───────────────────────────────────────────────
@@ -202,9 +222,47 @@ python3 scripts/sheet.py clear <spreadsheet_token> "<sheetId>!A1:C10"
 
 # ── scan.py — recursive wiki scan → Markdown report ──────────────────────────
 python3 scripts/scan.py https://xxx.feishu.cn/wiki/NodeToken
+python3 scripts/scan.py                                                # use default_root_node_token if configured
 ```
 
 All scripts output JSON (except `scan.py` which outputs Markdown). Credentials read from `FEISHU_APP_ID` and `FEISHU_APP_SECRET` env vars automatically.
+
+---
+
+### Fast routing rules
+
+Follow this order unless the user explicitly asks for a different command:
+
+1. If the user provides a wiki URL:
+   - extract `node_token`
+   - run `python3 scripts/wiki.py get-node <node_token>`
+   - branch on `obj_type`
+2. Before the first real operation on a new wiki target:
+   - run `python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>`
+   - reuse cached success on later runs unless `--force` is needed
+3. If the user wants a new doc in the wiki:
+   - prefer `python3 scripts/wiki.py create-doc ...`
+   - do not split create + write unless there is a good reason
+4. If the user wants a new bitable in the wiki:
+   - use `python3 scripts/wiki.py create-node --type bitable`
+   - never use standalone bitable creation to create the wiki node
+5. If the user wants to operate on an existing docx/bitable/sheet:
+   - resolve `obj_token` first via `wiki.py get-node`
+   - then switch to `docx.py` / `bitable.py` / `sheet.py`
+6. Do not claim support for deleting an entire wiki node.
+   - This repository does not currently verify a public Feishu node-delete API.
+
+### Verified ability boundary
+
+Verified against a real Feishu wiki space:
+
+- `wiki/docx`: `check-permissions`, `create-doc`, `read`, `append`, `rename`, `rename-node`, `delete-blocks`, `clear`
+- `wiki/bitable`: `create-node --type bitable`, `tables`, `fields`, `create-field`, `add`, `update`, `get-record`, `delete`, `delete-field`, `create-table`, `delete-table`
+
+Not yet claimed:
+
+- whole `wiki node` deletion
+- `sheet.py` live verification in this repository
 
 ---
 
@@ -214,6 +272,8 @@ Every script command handles auth automatically. If a command fails with an auth
 
 ```bash
 python3 scripts/wiki.py token
+python3 scripts/wiki.py check-connection
+python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>
 ```
 
 to diagnose — then stop and report to the user:
@@ -232,39 +292,42 @@ Do not run `token` as a mandatory pre-flight before every operation — only whe
 
 ### Step 1 — Identify intent and branch
 
-```
-If user provides a wiki URL or node_token
-  → python3 scripts/wiki.py get-node <node_token>
-  → Branch based on obj_type in the response
+Use this decision order:
 
-If user wants to list wiki spaces
-  → python3 scripts/wiki.py spaces
-
-If user wants to list nodes in a space
-  → python3 scripts/wiki.py nodes <space_id> [--parent <token>]
-
-If user wants to create a node         → Step 2A
-If user wants to manage members        → Step 2B
-If user wants to operate on a bitable  → Step 2C
-If user wants to read docx content     → Step 2E
-If user wants to write docx content    → Step 2E
-If user wants a summary report         → Step 2D
-If user wants to read or write a sheet → Step 2F
-If user wants to move or rename a node → Step 2G
-```
+1. If the user gives a wiki URL or `node_token`
+   - run `python3 scripts/wiki.py get-node <node_token>`
+   - inspect `obj_type`
+2. If this is the first real operation on that wiki target
+   - run `python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>`
+   - if it fails, inspect `.feishu-wiki-su-state.json` or rerun with `--show-last-failure`
+3. If the user gives no target but the skill has a default target
+   - run `python3 scripts/wiki.py resolve-target`
+4. Then route by intent:
+   - list wiki spaces → `python3 scripts/wiki.py spaces`
+   - list nodes in a space → `python3 scripts/wiki.py nodes <space_id> [--parent <token>]`
+   - create a new wiki node → Step 2A
+   - manage members → Step 2B
+   - operate on a bitable → Step 2C
+   - summary report → Step 2D
+   - read or write docx → Step 2E
+   - read or write sheet → Step 2F
+   - move or rename a node → Step 2G
 
 ---
 
 ### Step 2A — Create a node
 
 ```bash
-python3 scripts/wiki.py create-node <space_id> --title "Title" --type docx [--parent <node_token>]
+python3 scripts/wiki.py create-node [<space_id>] --title "Title" --type docx [--parent <node_token>] [--target product]
 ```
 
 **Critical constraint**: to create a bitable inside a wiki, you MUST use this command with `--type bitable`.
 Never call the standalone bitable creation endpoint — it will fail with error 1254002.
 
 The response includes `node_token` and `obj_token` — return both to the user.
+
+If `<space_id>` is omitted, the command must use `default_space_id` or the `space_id` resolved from the selected default target.
+If `--parent` is omitted, the command should use `default_root_node_token` when configured; otherwise create at the wiki root.
 
 If `--type docx` and the user provides content to write → proceed to **Step 2E** using the returned `obj_token` as `document_id`.
 
@@ -275,12 +338,14 @@ If `--type docx` and the user provides content to write → proceed to **Step 2E
 Add a member:
 ```bash
 python3 scripts/wiki.py add-member <space_id> --email user@example.com --role member
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <open_id> --role admin
 ```
 
 Remove a member:
 ```bash
 python3 scripts/wiki.py remove-member <space_id> --member-id <member_id>
 ```
+
 
 ---
 
@@ -354,7 +419,20 @@ Read commands (`tables`, `fields`, `query`) auto-paginate with no extra flags ne
 
 ### Step 2E — Write content into a wiki-hosted docx
 
-**Default: just use `write` — it auto-detects format.**
+**Default: for a new doc, use `create-doc` to close the flow in one command.**
+
+```bash
+python3 scripts/wiki.py create-doc --title "Onboarding Guide" --content "# Title" [--target product]
+```
+
+This command:
+1. Resolves `space_id` from the explicit arg or configured default target
+2. Uses `default_root_node_token` as parent when `--parent` is omitted
+3. Creates the docx node
+4. Writes the content
+5. Transfers ownership automatically if `owner_openid` is configured and transfer is not disabled
+
+**For existing docs, use `docx.py write` — it auto-detects format.**
 
 ```bash
 # Auto-detect (default) — detects # headings, - bullets, ``` fences, **bold**, etc.
@@ -399,7 +477,8 @@ python3 scripts/docx.py write <document_id> --content "new content..."
 
 **Optional: ownership transfer**
 
-If `owner_openid` is configured (format `ou_xxx`), after docx-write succeeds:
+If `owner_openid` is configured (format `ou_xxx`), `create-doc` transfers ownership automatically unless `--no-transfer-owner` is set.
+For existing docs, after docx-write succeeds:
 
 ```bash
 python3 scripts/docx.py transfer-owner <document_id> --openid <owner_openid>

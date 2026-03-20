@@ -6,6 +6,39 @@ Covers wiki structure, docx content, bitable (multi-dimensional tables), and spr
 
 ---
 
+## Verified capabilities
+
+The following flows have been verified against a real Feishu wiki space:
+
+- `wiki/docx`
+  - `check-permissions`: confirms space access, node access, and content access
+  - `create-doc`: creates a wiki docx node and writes initial content
+  - `docx.py read`: reads document content
+  - `docx.py append`: appends content
+  - `docx.py rename`: renames the underlying docx title
+  - `wiki.py rename-node`: renames the wiki node title
+  - `docx.py delete-blocks`: deletes a selected content range
+  - `docx.py clear`: clears document content
+- `wiki/bitable`
+  - `wiki.py create-node --type bitable`: creates a bitable inside the wiki
+  - `bitable.py tables`: lists tables
+  - `bitable.py fields`: lists fields
+  - `bitable.py create-field`: creates a field
+  - `bitable.py add`: creates records
+  - `bitable.py update`: updates records
+  - `bitable.py get-record`: reads a single record
+  - `bitable.py delete`: deletes a single record
+  - `bitable.py delete-field`: deletes a field
+  - `bitable.py create-table`: creates a table
+  - `bitable.py delete-table`: deletes a table
+
+Current boundary:
+
+- Document-content deletion is verified
+- Whole wiki-node deletion is not claimed as supported yet, because no confirmed public Feishu node-delete API document has been verified in this repository
+
+---
+
 ## What it does
 
 | Area | Operations |
@@ -56,6 +89,30 @@ App Release → Version Management → Create Version → Apply for release → 
 
 Open the target wiki space in Feishu → ··· → Settings → Members → Add Member → search for your app name → set role to **Member** or **Admin**.
 
+For reliable write access, use **Admin**.
+
+Important:
+
+- For everyday use after setup, `App ID + App Secret + wiki link` is enough.
+- For the **first time** an app connects to a specific wiki space, a knowledge-base admin may still need to complete a one-time explicit space grant.
+- If the app can read a node/docx but `get-space`, `nodes`, or `create-doc` still return `131006`, complete the explicit grant below.
+
+#### First-time explicit grant for a wiki space
+
+Some tenants require an extra one-time grant even after the app is visible in the wiki UI.
+
+1. Get the app `open_id`.
+2. Get a knowledge-space admin's `user_access_token`.
+3. Add the app `open_id` to the target `space_id` as a member/admin.
+
+This repository supports that flow directly:
+
+```bash
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <app_open_id> --role admin --access-token <user_access_token>
+```
+
+After this one-time step succeeds for a given app + wiki space pair, later runs do not need extra permission actions.
+
 ### 5. Set credentials
 
 ```bash
@@ -63,10 +120,20 @@ openclaw config set skills.feishu-wiki-su.env.FEISHU_APP_ID     <App ID>
 openclaw config set skills.feishu-wiki-su.env.FEISHU_APP_SECRET  <App Secret>
 ```
 
+Optional defaults for a reusable wiki workflow:
+
+```bash
+openclaw config set skills.feishu-wiki-su.config.default_space_id  <space_id>
+openclaw config set skills.feishu-wiki-su.config.default_root_node_token  <node_token>
+openclaw config set skills.feishu-wiki-su.config.owner_openid  <ou_xxx>
+openclaw config set skills.feishu-wiki-su.config.targets_json  '{"product":{"space_id":"<space_id>","root_node_token":"<node_token>"}}'
+```
+
 Verify:
 
 ```bash
 python3 scripts/wiki.py token
+python3 scripts/wiki.py check-connection
 ```
 
 ---
@@ -79,18 +146,26 @@ All scripts output JSON (except `scan.py` which outputs Markdown). Auth is handl
 
 ```bash
 python3 scripts/wiki.py token
+python3 scripts/wiki.py check-connection
+python3 scripts/wiki.py check-permissions <wiki_url_or_node_token>
 python3 scripts/wiki.py spaces
+python3 scripts/wiki.py resolve-target [--target <name>]
 python3 scripts/wiki.py get-space <space_id>
 python3 scripts/wiki.py nodes <space_id> [--parent <node_token>]
 python3 scripts/wiki.py get-node <node_token>
-python3 scripts/wiki.py create-node <space_id> --title "Title" [--type docx|bitable|sheet|mindnote|slides|file] [--parent <token>]
+python3 scripts/wiki.py create-node [<space_id>] --title "Title" [--type docx|bitable|sheet|mindnote|slides|file] [--parent <token>] [--target <name>]
+python3 scripts/wiki.py create-doc [<space_id>] --title "Title" --content "..." [--parent <token>] [--target <name>]
 python3 scripts/wiki.py move-node <space_id> <node_token> --target-parent <token>
 python3 scripts/wiki.py rename-node <space_id> <node_token> --title "New Title"
 python3 scripts/wiki.py add-member <space_id> --email user@example.com [--role member|admin]
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <open_id> [--role member|admin]
+python3 scripts/wiki.py add-member <space_id> --member-type openid --member-id <open_id> --role admin --access-token <user_access_token>
 python3 scripts/wiki.py remove-member <space_id> --member-id <openid> [--member-role member|admin]
 ```
 
 **Token chain**: wiki URL → `node_token` → `get-node` → `obj_token` → use for content APIs.
+**Config resolution**: env vars → `skills.feishu-wiki-su` OpenClaw config → `channels.feishu` credentials fallback.
+**Permission state**: `check-permissions` writes a local cache file only after a successful probe, and also records the last failed probe with `code/msg/log_id` in `.feishu-wiki-su-state.json`.
 
 ### docx.py — Document content
 
@@ -176,6 +251,7 @@ Range format: `<sheetId>!<start>:<end>` e.g. `Q7PlXT!A1:C10`.
 ```bash
 python3 scripts/scan.py https://xxx.feishu.cn/wiki/<node_token>
 # or: python3 scripts/scan.py <node_token>
+python3 scripts/scan.py                              # uses default_root_node_token if configured
 ```
 
 Recursively lists all descendant nodes, reads docx previews, and outputs a Markdown report with a directory tree, content summaries, and status statistics (Complete / In progress / Empty / No permission).

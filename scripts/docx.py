@@ -32,6 +32,13 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import _api, _get_token, _out, _die, CHUNK_SIZE, BLOCK_BATCH
 
+# Import table converter
+try:
+    from table_converter import markdown_table_to_feishu
+    TABLE_CONVERTER_AVAILABLE = True
+except ImportError:
+    TABLE_CONVERTER_AVAILABLE = False
+
 
 # ── Markdown constants (source: Feishu Open Platform docs) ───────────────────
 
@@ -138,13 +145,49 @@ def _md_to_blocks(text):
       (empty line)   → skipped
 
     Inline: **bold** __bold__ *italic* _italic_ `inline code`
-    NOT supported: tables, images, links, nested lists (see references/templates.md)
+    NOT supported: images, links, nested lists (see references/templates.md)
+    Tables: Auto-converted to formatted bullet lists
     """
     blocks = []
     lines = text.splitlines()
     i = 0
     while i < len(lines):
-        s = lines[i].strip()
+        s = lines[i]
+        stripped = s.strip()
+
+        # table: convert to formatted text (must check before other patterns)
+        if stripped.startswith("|"):
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            # Parse table
+            if len(table_lines) >= 3:  # Header + separator + at least 1 row
+                header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+                # Add divider before table
+                blocks.append({"block_type": 22, "divider": {}})
+                # Convert each row to formatted text
+                for row_line in table_lines[2:]:  # Skip header and separator
+                    row_cells = [c.strip() for c in row_line.split("|")[1:-1]]
+                    if row_cells and row_cells[0]:
+                        # Skip separator rows
+                        if all(c.replace("-", "").replace(" ", "") == "" for c in row_cells):
+                            continue
+                        # Format: **Name** — Field1: Value1 | Field2: Value2
+                        parts = [f"**{row_cells[0]}**"]
+                        for j, cell in enumerate(row_cells[1:], 1):
+                            if j <= len(header_cells) and cell and header_cells[j-1]:
+                                parts.append(f"{header_cells[j-1]}: {cell}")
+                        row_text = " — ".join(parts)
+                        blocks.append({
+                            "block_type": 2,
+                            "text": {"elements": _parse_inline(row_text), "style": {}},
+                        })
+                # Add divider after table
+                blocks.append({"block_type": 22, "divider": {}})
+            continue
+
+        s = stripped  # Use stripped version for other checks
 
         # fenced code block
         if s.startswith("```"):
@@ -226,6 +269,49 @@ def _md_to_blocks(text):
             i += 1
             continue
 
+        # table: convert to Feishu table blocks
+        if s.startswith("|"):
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i])
+                i += 1
+            
+            # Try to use table converter if available
+            if TABLE_CONVERTER_AVAILABLE:
+                table_md = '\n'.join(table_lines)
+                table_block, cell_blocks = markdown_table_to_feishu(table_md)
+                if table_block:
+                    blocks.append(table_block)
+                    blocks.extend(cell_blocks)
+                else:
+                    # Fallback: add as plain text
+                    for line in table_lines:
+                        blocks.append({
+                            "block_type": 2,
+                            "text": {"elements": _parse_inline(line), "style": {}},
+                        })
+            else:
+                # Fallback: format as text with separators
+                if len(table_lines) >= 3:
+                    header_cells = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+                    blocks.append({"block_type": 22, "divider": {}})
+                    for row_line in table_lines[2:]:
+                        row_cells = [c.strip() for c in row_line.split("|")[1:-1]]
+                        if row_cells and row_cells[0]:
+                            if all(c.replace("-", "").replace(" ", "") == "" for c in row_cells):
+                                continue
+                            parts = [f"**{row_cells[0]}**"]
+                            for j, cell in enumerate(row_cells[1:], 1):
+                                if j <= len(header_cells) and cell and header_cells[j-1]:
+                                    parts.append(f"{header_cells[j-1]}: {cell}")
+                            row_text = " — ".join(parts)
+                            blocks.append({
+                                "block_type": 2,
+                                "text": {"elements": _parse_inline(row_text), "style": {}},
+                            })
+                    blocks.append({"block_type": 22, "divider": {}})
+            continue
+
         # plain text paragraph
         blocks.append({
             "block_type": 2,
@@ -304,6 +390,31 @@ def _do_write_impl(tok, document_id, content, fmt):
             if resp.get("code") != 0:
                 _die(f"write chunk {i + 1}/{len(chunks)} failed: {resp}")
         return {"ok": True, "document_id": document_id, "format": "plain", "chunks_written": len(chunks)}
+
+
+def _transfer_owner_impl(tok, document_id, openid, old_owner_perm="view"):
+    """Transfer a docx to the target openid. Returns a structured result object."""
+    params = {
+        "type": "docx",
+        "need_notification": "false",
+        "remove_old_owner": "false",
+        "stay_put": "false",
+        "old_owner_perm": old_owner_perm,
+    }
+    body = {"member_type": "openid", "member_id": openid}
+    resp = _api("POST",
+                f"/open-apis/drive/v1/permissions/{document_id}/members/transfer_owner",
+                token=tok, params=params, body=body)
+    code = resp.get("code", -1)
+    if code == 0:
+        return {"ok": True, "document_id": document_id, "new_owner": openid}
+    if code in (403, 99991663):
+        return {
+            "ok": False,
+            "code": code,
+            "msg": "Permission denied — enable docs:permission.member:transfer and publish app version (SETUP Steps B–C)",
+        }
+    _die(f"transfer-owner failed: {resp}")
 
 
 # ── Read helper ───────────────────────────────────────────────────────────────
@@ -465,27 +576,7 @@ def do_rename(a):
 
 def do_transfer_owner(a):
     tok = _get_token()
-    # Per API: control flags go in query params; only member identity in body
-    params = {
-        "type": "docx",
-        "need_notification": "false",
-        "remove_old_owner": "false",
-        "stay_put": "false",
-        "old_owner_perm": a.old_owner_perm,
-    }
-    body = {"member_type": "openid", "member_id": a.openid}
-    resp = _api("POST",
-                f"/open-apis/drive/v1/permissions/{a.document_id}/members/transfer_owner",
-                token=tok, params=params, body=body)
-    code = resp.get("code", -1)
-    if code == 0:
-        _out({"ok": True, "document_id": a.document_id, "new_owner": a.openid})
-    elif code in (403, 99991663):
-        _out({"ok": False, "code": code,
-              "msg": "Permission denied — enable docs:permission.member:transfer "
-                     "and publish app version (SETUP Steps B–C)"})
-    else:
-        _die(f"transfer-owner failed: {resp}")
+    _out(_transfer_owner_impl(tok, a.document_id, a.openid, a.old_owner_perm))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
